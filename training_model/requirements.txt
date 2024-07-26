@@ -1,0 +1,8 @@
+sqlalchemy
+joblib
+numpy
+python-dotenv
+pymysql
+scikit-learn
+shapely
+pandas
