@@ -7,3 +7,5 @@ numpy
 python-dotenv
 pymysql
 scikit-learn
+gzip
+python-multipart

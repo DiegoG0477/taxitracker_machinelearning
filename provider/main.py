@@ -6,6 +6,9 @@ import io
 import numpy as np
 from dotenv import load_dotenv
 import os
+import gzip
+from io import BytesIO
+from starlette.middleware.base import BaseHTTPMiddleware
 
 # Load environment variables from .env file
 load_dotenv()
@@ -36,6 +39,22 @@ def load_model_from_db(hour: int, quadrant: str):
             print(f"Modelo cargado de la base de datos para hora {hour} y cuadrante {quadrant}")
             return model
         return None
+
+class GZipMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        if response.headers.get('Content-Type') == 'application/json':
+            response_body = b"".join([chunk async for chunk in response.body_iterator])
+            buffer = BytesIO()
+            with gzip.GzipFile(fileobj=buffer, mode='wb') as f:
+                f.write(response_body)
+            buffer.seek(0)
+            response.body_iterator = iter([buffer.read()])
+            response.headers['Content-Encoding'] = 'gzip'
+            response.headers['Content-Length'] = str(len(response.body_iterator))
+        return response
+
+app.add_middleware(GZipMiddleware)
 
 @app.post("/api/heatmap-data")
 async def get_heatmap_data(data: HeatmapData):
