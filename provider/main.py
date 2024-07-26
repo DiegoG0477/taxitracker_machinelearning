@@ -5,6 +5,11 @@ import joblib
 import io
 import numpy as np
 import uvicorn
+from dotenv import load_dotenv
+import os
+
+# Load environment variables from .env file
+load_dotenv()
 
 app = FastAPI()
 
@@ -12,7 +17,7 @@ class HeatmapData(BaseModel):
     hour: int
 
 def get_db_connection():
-    db_connection_str = 'mysql+pymysql://root:$ui89<>-!gdRLDA145@jaguartech-database.ch4runvfltbm.us-east-1.rds.amazonaws.com/taxitracker'
+    db_connection_str = os.getenv('DB_CONNECTION_STRING')
     return create_engine(db_connection_str)
 
 def load_model_from_db(hour: int, quadrant: str):
@@ -63,5 +68,3 @@ async def get_heatmap_data(data: HeatmapData):
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=5000)
-
-# --launcher-skip

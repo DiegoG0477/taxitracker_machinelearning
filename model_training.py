@@ -1,70 +1,156 @@
-from fastapi import FastAPI, HTTPException
-from sqlalchemy import create_engine, text
-from pydantic import BaseModel
-import joblib
 import io
+import pandas as pd
+from sqlalchemy import create_engine, text
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error, r2_score
+import joblib
+import pymysql
+from shapely import wkt
 import numpy as np
-import uvicorn
-from dotenv import load_dotenv
 import os
+from dotenv import load_dotenv
 
-# Load environment variables from .env file
 load_dotenv()
-
-app = FastAPI()
-
-class HeatmapData(BaseModel):
-    hour: int
 
 def get_db_connection():
     db_connection_str = os.getenv('DB_CONNECTION_STRING')
     return create_engine(db_connection_str)
 
-def load_model_from_db(hour: int, quadrant: str):
+def save_model_to_db(hour, quadrant, model):
     engine = get_db_connection()
+    model_binary = io.BytesIO()
+    joblib.dump(model, model_binary)
+    model_binary.seek(0)
+    
     query = text("""
-    SELECT model_data FROM ml_models 
-    WHERE hour = :hour AND quadrant = :quadrant
+    INSERT INTO ml_models (hour, quadrant, model_data)
+    VALUES (:hour, :quadrant, :model_data)
+    ON DUPLICATE KEY UPDATE model_data = :model_data
     """)
     
-    with engine.connect() as conn:
-        result = conn.execute(query, {'hour': hour, 'quadrant': quadrant}).fetchone()
-        if result:
-            model_binary = io.BytesIO(result['model_data'])
-            model = joblib.load(model_binary)
-            return model
-        return None
+    try:
+        with engine.connect() as conn:
+            conn.execute(query, {
+                'hour': hour,
+                'quadrant': quadrant,
+                'model_data': model_binary.getvalue()
+            })
+            conn.commit()
+        print(f"Modelo guardado en la base de datos para hora {hour} y cuadrante {quadrant}")
+    except Exception as e:
+        print(f"Error al guardar el modelo en la base de datos: {e}")
 
-@app.post("/api/heatmap-data")
-async def get_heatmap_data(data: HeatmapData):
-    hour = data.hour
-    quadrants = ['norte_oriente', 'norte_poniente', 'sur_oriente', 'sur_poniente']
-    results = {}
+def parse_coordinates(coord_text):
+    if coord_text:
+        try:
+            point = wkt.loads(coord_text)
+            return point.y, point.x  # latitud, longitud
+        except Exception as e:
+            print(f"Error al parsear coordenadas: {coord_text}")
+            print(f"Error: {e}")
+    return None, None
 
-    for quadrant in quadrants:
-        model = load_model_from_db(hour, quadrant)
-        if model is None:
-            print(f"Modelo no encontrado para hora {hour} y cuadrante {quadrant}")
-            continue
+def load_data():
+    engine = get_db_connection()
+    query = '''
+    SELECT driver_id, date, start_hour, 
+           ST_AsText(start_coordinates) AS start_coordinates, 
+           ST_AsText(end_coordinates) AS end_coordinates, 
+           duration, distance_mts
+    FROM travels
+    '''
+    df = pd.read_sql(query, con=engine)
+    
+    print("Columnas originales:", df.columns)
+    print("Tipos de datos originales:")
+    print(df.dtypes)
+    print("\nMuestra de start_coordinates:")
+    print(df['start_coordinates'].head())
+    
+    # Extraer latitud y longitud de las coordenadas
+    df[['start_latitude', 'start_longitude']] = df['start_coordinates'].apply(parse_coordinates).apply(pd.Series)
+    df[['end_latitude', 'end_longitude']] = df['end_coordinates'].apply(parse_coordinates).apply(pd.Series)
+    
+    # Convertir start_hour a hora y day_of_week
+    df['hour'] = pd.to_datetime(df['start_hour']).dt.hour
+    df['day_of_week'] = pd.to_datetime(df['start_hour']).dt.dayofweek
+    
+    # Determinar cuadrante
+    def determine_quadrant(row):
+        lat = row['start_latitude']
+        lon = row['start_longitude']
+        if lat is not None and lon is not None:
+            if lat > 16.7:
+                if lon < -93.7:
+                    return 'sur_poniente'
+                else:
+                    return 'sur_oriente'
+            else:
+                if lon < -93.7:
+                    return 'norte_poniente'
+                else:
+                    return 'norte_oriente'
+        return 'desconocido'
+    
+    df['quadrant'] = df.apply(determine_quadrant, axis=1)
+    
+    print("Columnas después del procesamiento:", df.columns)
+    print("Tipos de datos después del procesamiento:")
+    print(df.dtypes)
+    print("\nMuestra de datos procesados:")
+    print(df[['hour', 'day_of_week', 'start_latitude', 'start_longitude', 'quadrant']].head())
+    
+    return df
+
+def train_and_save_model(hour, quadrant, data):
+    hourly_data = data[(data['hour'] == hour) & (data['quadrant'] == quadrant)]
+    
+    if hourly_data.empty:
+        print(f"No hay datos para la hora {hour} y el cuadrante {quadrant}")
+        return
+    
+    X = hourly_data[['start_latitude', 'start_longitude']]
+    y = hourly_data['distance_mts']
+    
+    # Verificar que haya suficientes datos para entrenar el modelo
+    if len(hourly_data) < 3:
+        print(f"No hay suficientes datos para entrenar el modelo para la hora {hour} y el cuadrante {quadrant}")
+        return
+    
+    # Dividir los datos en conjuntos de entrenamiento y prueba
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    # Definir el modelo y los parámetros para la búsqueda en cuadrícula
+    model = LinearRegression()
+    param_grid = {'fit_intercept': [True, False]}
+    grid_search = GridSearchCV(model, param_grid, cv=3)
+    
+    try:
+        grid_search.fit(X_train, y_train)
+        best_model = grid_search.best_estimator_
+        y_pred = best_model.predict(X_test)
         
-        # Create a grid of coordinates for predictions
-        x_range = np.arange(16.7, 16.7 + 100 * 0.003, 0.003)  # Example
-        y_range = np.arange(-93.8, -93.8 + 100 * 0.002, 0.002)  # Example
-        grid_coords = np.array([[x, y] for x in x_range for y in y_range])
+        print(f"Reporte de regresión para la hora {hour} y cuadrante {quadrant}:")
+        print(f"Mean Squared Error: {mean_squared_error(y_test, y_pred)}")
+        print(f"R^2 Score: {r2_score(y_test, y_pred)}")
         
-        # Obtain predictions from the model
-        predictions = model.predict(grid_coords)
-        
-        results[quadrant] = {
-            'x': x_range.tolist(),
-            'y': y_range.tolist(),
-            'z': predictions.tolist()
-        }
+        save_model_to_db(hour, quadrant, best_model)
+    except ValueError as e:
+        print(f"Error en el ajuste del modelo para la hora {hour} y cuadrante {quadrant}: {e}")
 
-    if not results:
-        raise HTTPException(status_code=404, detail="No models found for the given hour")
+def process_hour(hour, data):
+    for quadrant in data['quadrant'].unique():
+        print(f"Procesando hora {hour} y cuadrante {quadrant}")
+        train_and_save_model(hour, quadrant, data)
 
-    return results
+def main():
+    df = load_data()
+    
+    hours = df['hour'].unique()
+    
+    for hour in hours:
+        process_hour(hour, df)
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=5000)
+    main()
