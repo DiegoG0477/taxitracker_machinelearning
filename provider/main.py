@@ -28,9 +28,12 @@ def load_model_from_db(hour: int, quadrant: str):
     
     with engine.connect() as conn:
         result = conn.execute(query, {'hour': hour, 'quadrant': quadrant}).fetchone()
+        print("Resultado de la consulta:", result)  # Para depuración
+        
         if result:
-            model_binary = io.BytesIO(result['model_data'])
+            model_binary = io.BytesIO(result[0])  # Cambiado a result[0]
             model = joblib.load(model_binary)
+            print(f"Modelo cargado de la base de datos para hora {hour} y cuadrante {quadrant}")
             return model
         return None
 
