@@ -9,6 +9,7 @@ import os
 import gzip
 from io import BytesIO
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import StreamingResponse
 
 # Load environment variables from .env file
 load_dotenv()
@@ -49,9 +50,11 @@ class GZipMiddleware(BaseHTTPMiddleware):
             with gzip.GzipFile(fileobj=buffer, mode='wb') as f:
                 f.write(response_body)
             buffer.seek(0)
-            response.body_iterator = iter([buffer.read()])
-            response.headers['Content-Encoding'] = 'gzip'
-            response.headers['Content-Length'] = str(len(response.body_iterator))
+            # Use StreamingResponse to handle the compressed data
+            response = StreamingResponse(buffer, media_type="application/json", headers={
+                "Content-Encoding": "gzip",
+                "Content-Length": str(buffer.getbuffer().nbytes)
+            })
         return response
 
 app.add_middleware(GZipMiddleware)
