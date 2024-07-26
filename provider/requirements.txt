@@ -6,4 +6,4 @@ joblib
 numpy
 python-dotenv
 pymysql
-sklearn
+scikit-learn
