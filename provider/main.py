@@ -4,7 +4,6 @@ from pydantic import BaseModel
 import joblib
 import io
 import numpy as np
-import uvicorn
 from dotenv import load_dotenv
 import os
 
@@ -65,6 +64,3 @@ async def get_heatmap_data(data: HeatmapData):
         raise HTTPException(status_code=404, detail="No models found for the given hour")
 
     return results
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=5000)
