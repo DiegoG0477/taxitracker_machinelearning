@@ -1,6 +1,8 @@
-uvicorn==0.30.1
-fastapi==0.111.1
-uvicorn==0.30.1
-sqlalchemy==2.0.31
-joblib==1.4.2
-pymysql==1.1.1
+fastapi
+uvicorn
+sqlalchemy
+pydantic
+joblib
+numpy
+python-dotenv
+pymysql
