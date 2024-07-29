@@ -1,4 +1,5 @@
 import io
+import os
 import pandas as pd
 from sqlalchemy import create_engine, text
 from sklearn.model_selection import train_test_split, GridSearchCV
@@ -8,7 +9,6 @@ import joblib
 import pymysql
 from shapely import wkt
 import numpy as np
-import os
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -55,45 +55,27 @@ def load_data():
     engine = get_db_connection()
     query = '''
     SELECT driver_id, date, start_hour, 
-           ST_AsText(start_coordinates) AS start_coordinates, 
-           ST_AsText(end_coordinates) AS end_coordinates, 
-           duration, distance_mts
+        ST_AsText(start_coordinates) AS start_coordinates, 
+        ST_AsText(end_coordinates) AS end_coordinates, 
+        duration, distance_mts
     FROM travels
+    WHERE start_coordinates IS NOT NULL AND end_coordinates IS NOT NULL
     '''
     df = pd.read_sql(query, con=engine)
-    
-    print("Columnas originales:", df.columns)
-    print("Tipos de datos originales:")
-    print(df.dtypes)
-    print("\nMuestra de start_coordinates:")
-    print(df['start_coordinates'].head())
+
+    print("Datos cargados:", len(df))
     
     # Extraer latitud y longitud de las coordenadas
-    df[['start_latitude', 'start_longitude']] = df['start_coordinates'].apply(parse_coordinates).apply(pd.Series)
-    df[['end_latitude', 'end_longitude']] = df['end_coordinates'].apply(parse_coordinates).apply(pd.Series)
+    df[['start_longitude', 'start_latitude']] = df['start_coordinates'].apply(lambda x: pd.Series(parse_coordinates(x)))
+    df[['end_longitude', 'end_latitude']] = df['end_coordinates'].apply(lambda x: pd.Series(parse_coordinates(x)))
     
     # Convertir start_hour a hora y day_of_week
     df['hour'] = pd.to_datetime(df['start_hour']).dt.hour
     df['day_of_week'] = pd.to_datetime(df['start_hour']).dt.dayofweek
     
     # Determinar cuadrante
-    def determine_quadrant(row):
-        lat = row['start_latitude']
-        lon = row['start_longitude']
-        if lat is not None and lon is not None:
-            if lat > 16.7:
-                if lon < -93.7:
-                    return 'sur_poniente'
-                else:
-                    return 'sur_oriente'
-            else:
-                if lon < -93.7:
-                    return 'norte_poniente'
-                else:
-                    return 'norte_oriente'
-        return 'desconocido'
-    
     df['quadrant'] = df.apply(determine_quadrant, axis=1)
+    print(df['quadrant'].value_counts())  # Imprimir conteo de cada cuadrante
     
     print("Columnas después del procesamiento:", df.columns)
     print("Tipos de datos después del procesamiento:")
@@ -102,6 +84,22 @@ def load_data():
     print(df[['hour', 'day_of_week', 'start_latitude', 'start_longitude', 'quadrant']].head())
     
     return df
+
+def determine_quadrant(row):
+    lat = row['start_latitude']
+    lon = row['start_longitude']
+    if lat is not None and lon is not None:
+        if lat >= 16.75897067747087:
+            if lon <= -93.11945116216742:
+                return 'sur_poniente'
+            else:
+                return 'sur_oriente'
+        else:
+            if lon <= -93.11945116216742:
+                return 'norte_poniente'
+            else:
+                return 'norte_oriente'
+    return 'desconocido'
 
 def train_and_save_model(hour, quadrant, data):
     hourly_data = data[(data['hour'] == hour) & (data['quadrant'] == quadrant)]
@@ -113,15 +111,12 @@ def train_and_save_model(hour, quadrant, data):
     X = hourly_data[['start_latitude', 'start_longitude']]
     y = hourly_data['distance_mts']
     
-    # Verificar que haya suficientes datos para entrenar el modelo
     if len(hourly_data) < 3:
         print(f"No hay suficientes datos para entrenar el modelo para la hora {hour} y el cuadrante {quadrant}")
         return
     
-    # Dividir los datos en conjuntos de entrenamiento y prueba
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     
-    # Definir el modelo y los parámetros para la búsqueda en cuadrícula
     model = LinearRegression()
     param_grid = {'fit_intercept': [True, False]}
     grid_search = GridSearchCV(model, param_grid, cv=3)

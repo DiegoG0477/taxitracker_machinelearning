@@ -8,3 +8,5 @@ python-dotenv
 pymysql
 scikit-learn
 python-multipart
+databases
+aiomysql
