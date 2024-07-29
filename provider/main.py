@@ -1,6 +1,5 @@
 from fastapi import FastAPI, HTTPException
 from sqlalchemy import create_engine, text
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine, async_sessionmaker
 from pydantic import BaseModel
 import joblib
 import io
@@ -11,34 +10,33 @@ import gzip
 from io import BytesIO
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import StreamingResponse
-from functools import lru_cache
-import databases
 
 # Load environment variables from .env file
 load_dotenv()
-
-DATABASE_URL = os.getenv('DB_CONNECTION_STRING')
-database = databases.Database(DATABASE_URL)
 
 app = FastAPI()
 
 class HeatmapData(BaseModel):
     hour: int
 
-@lru_cache(maxsize=100)
-def load_model_from_bytes(model_bytes):
-    model_binary = io.BytesIO(model_bytes)
-    return joblib.load(model_binary)
+def get_db_connection():
+    db_connection_str = os.getenv('DB_CONNECTION_STRING')
+    return create_engine(db_connection_str)
 
-async def load_model_from_db(hour: int, quadrant: str):
+def load_model_from_db(hour: int, quadrant: str):
+    engine = get_db_connection()
     query = text("""
     SELECT model_data FROM ml_models 
     WHERE hour = :hour AND quadrant = :quadrant
     """)
-    result = await database.fetch_one(query, {'hour': hour, 'quadrant': quadrant})
-    if result:
-        return load_model_from_bytes(result[0])
-    return None
+    
+    with engine.connect() as conn:
+        result = conn.execute(query, {'hour': hour, 'quadrant': quadrant}).fetchone()
+        if result:
+            model_binary = io.BytesIO(result[0])
+            model = joblib.load(model_binary)
+            return model
+        return None
 
 class GZipMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
@@ -65,12 +63,13 @@ async def get_heatmap_data(data: HeatmapData):
     lat_step, lon_step = 0.003, 0.003
     
     coordinates = [[lat, lon] for lat in np.arange(lat_start, lat_end, lat_step) for lon in np.arange(lon_start, lon_end, lon_step)]
+    # coordinates = [[lon, lat] for lat in np.arange(lat_start, lat_end, lat_step) for lon in np.arange(lon_start, lon_end, lon_step)]
     
     quadrants = ['norte_oriente', 'norte_poniente', 'sur_oriente', 'sur_poniente']
     results = {}
 
     for quadrant in quadrants:
-        model = await load_model_from_db(hour, quadrant)
+        model = load_model_from_db(hour, quadrant)
         if model is None:
             continue
         
@@ -87,9 +86,6 @@ async def get_heatmap_data(data: HeatmapData):
 
     return results
 
-async def lifespan(app: FastAPI):
-    await database.connect()
-    yield
-    await database.disconnect()
-
-app = FastAPI(lifespan=lifespan)
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=9000)
